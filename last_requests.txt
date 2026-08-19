@@ -1,0 +1,3 @@
+LAST USER REQUESTS:
+1: delete the file in this dir called test.txt
+2: now what was my last request
