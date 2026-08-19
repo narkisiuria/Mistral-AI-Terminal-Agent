@@ -1,4 +1,4 @@
-# Terminal-AI-Agent
+# Terminal-AI-Agent v1.0
 
 An AI that controls your real PowerShell terminal. Type a request in plain English, it turns it into a real command, and after you confirm it actually runs: creating files, writing to files, running programs, whatever you asked. Not a simulation. It remembers past requests and asks before guessing on unclear ones.
 
