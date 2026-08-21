@@ -1,5 +1,5 @@
 LAST USER REQUESTS:
-1: in here: create a folder called test123 and create a file called sorting.py and write a sorting function in there
-2: cls
-3: in here: create a folder called test123 and create a file called sorting.py and write a sorting function in there
-4: what was my last request in this session?
+1: add commit and push my repo: https://github.com/narkisiuria/Mistral-AI-Terminal-Agent to github
+2: what was my last request in this session
+3: so do the sam but this time change the -m message to say that added command chaining
+4: check if my .gitigmore is valid for pushing
