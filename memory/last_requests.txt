@@ -1,0 +1,5 @@
+LAST USER REQUESTS:
+1: in here: create a folder called test123 and create a file called sorting.py and write a sorting function in there
+2: cls
+3: in here: create a folder called test123 and create a file called sorting.py and write a sorting function in there
+4: what was my last request in this session?

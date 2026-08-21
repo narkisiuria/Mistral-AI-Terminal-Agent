@@ -5,6 +5,8 @@ from mistralai.client import Mistral
 from dotenv import load_dotenv
 import shlex
 import sys
+from memory.save_and_load_memory import save_memory
+from memory.save_and_load_memory import load_memory
 
 proc = subprocess.Popen(
     ["powershell.exe", "-NoLogo", "-NoExit"],
@@ -74,18 +76,20 @@ def call_mistral(system_prompt, user_content):
 
 system_prompt = (
     '''You are a command-translation engine for a Windows PowerShell terminal.
-        Your only job: convert the user's plain-English request into ONE single valid PowerShell command that does what they asked.
+        Your job: convert the user's plain-English request into either ONE valid PowerShell command, or a CHAINING of multiple commands.
 
         Rules:
-        - Output ONLY the raw command. No explanation, no markdown, no backticks, no extra text.
-        - If the request needs multiple steps, output only the FIRST command needed — do not chain with ; or &&.
+        - Output ONLY the raw command (or CHAINING line). No explanation, no markdown, no backticks, no extra text.
+        - Whenever a request can be broken into multiple separate commands, PREFER outputting CHAINING even if a single command could technically do it — chaining is preferred over single complex commands. Format: CHAINING: command1;command2;command3
+        - Never use ";" inside an individual command's own content (e.g. inside a commit message) — since ";" is the separator between chained commands. Rephrase to avoid needing one.
         - Never invent flags or cmdlets that don't exist in PowerShell.
         - If the request is ambiguous or unsafe to guess (e.g. could delete/overwrite something unintended), output exactly: CLARIFY: <short question>
         - Assume current working directory is already correct — don't cd unless explicitly asked.
         - Prefer built-in PowerShell cmdlets over external tools unless the user names one.
         - If the user's request is a question you can answer directly (e.g. using the memory context provided, general knowledge,
         or explaining something) rather than something that needs a real system action,
-        output an `echo "<your answer>"` command instead of searching for an unrelated real cmdlet.'''
+        output an `echo "<your answer>"` command instead of searching for an unrelated real cmdlet.
+        - You are given two kinds of context: "LAST USER REQUESTS" (old, saved from a previous run) and "Recent session history" (fresh, from THIS current session). When they conflict, always trust "Recent session history" over "LAST USER REQUESTS" — the session history is more current and accurate.'''
     )
 
 time.sleep(0.5)
@@ -99,23 +103,12 @@ result = read_until_prompt(proc)
 cmd, output, prompt = parse_result(result)
 path = prompt.split()[1]
 client_request = ""
-MEMORY_FILE = "last_requests.txt"
-
-def load_memory():
-    if os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "r") as f:
-            return f.read()
-    return ""
-
-def save_memory(requests_list):
-    with open(MEMORY_FILE, "w") as f:
-        f.write("LAST USER REQUESTS:\n")
-        for i, r in enumerate(requests_list[-4:], 1):
-            f.write(f"{i}: {r}\n")
+MEMORY_FILE = "memory/last_requests.txt"
 
 past_requests = []
 memory_context = load_memory()
 session_history = []
+old_memory = load_memory()
 
 client_request = ""
 try:
@@ -126,6 +119,9 @@ try:
             sys.exit(0)
 
         past_requests.append(client_request)
+        recent_past = past_requests[-4:]
+        session_summary = "LAST USER REQUESTS (this session):\n" + "\n".join(f"{i}: {r}" for i, r in enumerate(recent_past, 1))
+        memory_context = f"{old_memory}\n\n{session_summary}"
         user_content = f"{memory_context}\n\nCurrent request: {client_request}"
         
         recent = session_history[-3:]
@@ -137,23 +133,46 @@ try:
             answer = input(f"{shell} ")
             user_content = f"{user_content}\nClarification: {answer}"
             shell = call_mistral(user_content=user_content, system_prompt=system_prompt)
-
-        confirmation = input(f"procced running: '{shell}' (n/y)> ")
-        shell += "\n"
-
-        if confirmation == "y" or confirmation == "":
-            proc.stdin.write(shell)
-            proc.stdin.flush()
-            time.sleep(0.5)
-            result = read_until_prompt(proc)
-
-            cmd, output, prompt = parse_result(result)
-
-            print(output.strip())
-            session_history.append({"request": client_request, "command": shell.strip(), "output": output.strip()})
+        
+        if shell.split(":")[0] == "CHAINING":
+            after_label = shell.split(":", 1)[1]
+            output_list = after_label.split(";")
+            output_list = [cmd.strip() for cmd in output_list]
+            
+            print("Full chain planned:")
+            for i, cmd in enumerate(output_list, 1):
+                print(f"  {i}. {cmd}")
+            
+            confirmation = input("proceed running this chain? (n/y)> ")
+            
+            if confirmation == "y" or confirmation == "":
+                for cmd in output_list:
+                    cmd += "\n"
+                    proc.stdin.write(cmd)
+                    proc.stdin.flush()
+                    time.sleep(0.5)
+                    result = read_until_prompt(proc)
+                    
+                    cmd_out, output, prompt = parse_result(result)
+                    
+                    print(output.strip())
+                    session_history.append({"request": client_request, "command": cmd.strip(), "output": output.strip()})
 
         else:
-            continue
+            confirmation = input(f"procced running: '{shell}' (n/y)> ")
+            shell += "\n"
+
+            if confirmation == "y" or confirmation == "":
+                proc.stdin.write(shell)
+                proc.stdin.flush()
+                time.sleep(0.5)
+                result = read_until_prompt(proc)
+
+                cmd, output, prompt = parse_result(result)
+
+                print(output.strip())
+                session_history.append({"request": client_request, "command": shell.strip(), "output": output.strip()})
+
 
 except KeyboardInterrupt:
     save_memory(past_requests)
