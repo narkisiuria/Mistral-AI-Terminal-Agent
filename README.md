@@ -1,4 +1,4 @@
-# Mistral Terminal AI Agent (v2.0)
+# Mistral Terminal AI Agent (v2.5)
 
 An AI agent that lives inside a real, persistent PowerShell session on your machine. Type a request in plain English, it turns it into a real command, and after you confirm it actually runs. Not a simulation, every approved command really executes on your machine.
 
