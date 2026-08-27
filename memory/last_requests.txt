@@ -1,2 +1,3 @@
 LAST USER REQUESTS:
-1: remove hi.txt echo done when finished
+1: do all the steps to add commit and push to my repo: https://github.com/narkisiuria/Mistral-AI-Terminal-Agent
+2: do all the steps to add commit (message = "error recovery done") and push to my repo: https://github.com/narkisiuria/Mistral-AI-Terminal-Agent

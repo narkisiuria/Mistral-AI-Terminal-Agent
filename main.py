@@ -107,7 +107,8 @@ failure_system_prompt = (
         - If there's a clear fix, output EXACTLY: FIXABLE: <the fixed command>
         - If there's no safe automatic fix (e.g. needs user input, missing file, permissions issue), output a short plain-text explanation instead (2-3 sentences, no commands).
         - Never output more than one command after "FIXABLE:".
-        - Never use ";" inside the fixed command's own content.'''
+        - Never use ";" inside the fixed command's own content.
+        - Any fix command must be valid PowerShell syntax. Never use "&&" (not valid in PowerShell) — use ";" to sequence commands instead, or "if ($?) { ... }" for conditional execution.'''
     )
 
 time.sleep(0.5)
