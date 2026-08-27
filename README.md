@@ -95,6 +95,6 @@ This tool executes real commands on your real machine after confirmation. Always
 *   [x] Clarify-on-ambiguity
 *   [x] Command chaining with full-chain preview and single confirmation
 *   [x] Session and cross-session memory
-*   [ ] Error recovery (agent reads command failures and proposes a fix)
+*   [x] Error recovery (agent reads command failures and proposes a fix)
 *   [ ] App-launching support
 *   [ ] Cross-platform (Linux/Kali) shell support
