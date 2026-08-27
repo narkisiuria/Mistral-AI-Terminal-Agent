@@ -55,6 +55,11 @@ if not api_key:
 print("successfuly finished loading API key")
 client = Mistral(api_key=api_key)
 
+def command_actually_failed(result):
+    lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
+    marker_line = lines[-2] if len(lines) >= 2 else ""
+    return marker_line == "__CMD_FAILED__"
+
 def call_mistral(system_prompt, user_content):
     """Helper function to send data to Mistral AI."""
     try:
@@ -90,6 +95,19 @@ system_prompt = (
         or explaining something) rather than something that needs a real system action,
         output an `echo "<your answer>"` command instead of searching for an unrelated real cmdlet.
         - You are given two kinds of context: "LAST USER REQUESTS" (old, saved from a previous run) and "Recent session history" (fresh, from THIS current session). When they conflict, always trust "Recent session history" over "LAST USER REQUESTS" — the session history is more current and accurate.'''
+    )
+
+failure_system_prompt = (
+    '''You are a PowerShell error-diagnosis assistant.
+        You will be given a command that failed and its raw error output.
+
+        Your job: diagnose the error, and if there's a clear, safe, one-command fix, propose it.
+
+        Rules:
+        - If there's a clear fix, output EXACTLY: FIXABLE: <the fixed command>
+        - If there's no safe automatic fix (e.g. needs user input, missing file, permissions issue), output a short plain-text explanation instead (2-3 sentences, no commands).
+        - Never output more than one command after "FIXABLE:".
+        - Never use ";" inside the fixed command's own content.'''
     )
 
 time.sleep(0.5)
@@ -147,31 +165,70 @@ try:
             
             if confirmation == "y" or confirmation == "":
                 for cmd in output_list:
-                    cmd += "\n"
-                    proc.stdin.write(cmd)
+                    real_cmd = cmd + "; if ($?) {'success'} else {'__CMD_FAILED__'}\n"
+                    proc.stdin.write(real_cmd)
                     proc.stdin.flush()
                     time.sleep(0.5)
                     result = read_until_prompt(proc)
-                    
+
+                    attempts = 0
+                    resolved = not command_actually_failed(result)
+                    gave_up_with_explanation = False
+
+                    while command_actually_failed(result) and attempts < 3:
+                        attempts += 1
+                        print(f"failure detected (fix attempt no. {attempts})")
+                        failure_response = call_mistral(failure_system_prompt, f"failed command: {cmd}\nreason: {result}")
+
+                        if "FIXABLE: " in failure_response:
+                            fix_cmd = failure_response.split("FIXABLE: ", 1)[1].strip()
+                            confirm_fix = input(f"proceed running fix: '{fix_cmd}' (n/y)> ")
+
+                            if confirm_fix == "y" or confirm_fix == "":
+                                cmd = fix_cmd
+                                real_cmd = cmd + "; if ($?) {'success'} else {'__CMD_FAILED__'}\n"
+                                proc.stdin.write(real_cmd)
+                                proc.stdin.flush()
+                                time.sleep(0.5)
+                                result = read_until_prompt(proc)
+                                resolved = not command_actually_failed(result)
+                            else:
+                                print("fix declined, stopping this step.")
+                                break
+                        else:
+                            print(failure_response)
+                            gave_up_with_explanation = True
+                            break
+
                     cmd_out, output, prompt = parse_result(result)
-                    
-                    print(output.strip())
-                    session_history.append({"request": client_request, "command": cmd.strip(), "output": output.strip()})
+                    clean_output = "\n".join(l for l in output.strip().split("\n") if l.strip() not in ("success", "__CMD_FAILED__"))
 
-        else:
-            confirmation = input(f"procced running: '{shell}' (n/y)> ")
-            shell += "\n"
+                    if resolved:
+                        print(clean_output)
+                    elif not gave_up_with_explanation:
+                        print("Command failed after all retry attempts:")
+                        print(clean_output)
 
-            if confirmation == "y" or confirmation == "":
-                proc.stdin.write(shell)
-                proc.stdin.flush()
-                time.sleep(0.5)
-                result = read_until_prompt(proc)
+                    session_history.append({"request": client_request, "command": cmd.strip(), "output": clean_output})
 
-                cmd, output, prompt = parse_result(result)
+            else:
+                confirmation = input(f"procced running: '{shell}' (n/y)> ")
+                shell += "; if ($?) {'success'} else {'__CMD_FAILED__'}\n"
 
-                print(output.strip())
-                session_history.append({"request": client_request, "command": shell.strip(), "output": output.strip()})
+                if confirmation == "y" or confirmation == "":
+                    proc.stdin.write(shell)
+                    proc.stdin.flush()
+                    time.sleep(0.5)
+                    result = read_until_prompt(proc)
+
+                    if command_actually_failed(result):
+                        print("failure detected")
+                        failure_response = call_mistral(failure_system_prompt, f"failed command: {shell}\nreason: {result}")
+                        print(failure_response)
+                    else:
+                        cmd, output, prompt = parse_result(result)
+                        print(output.strip())
+                        session_history.append({"request": client_request, "command": shell.strip(), "output": output.strip()})
 
 
 except KeyboardInterrupt:
