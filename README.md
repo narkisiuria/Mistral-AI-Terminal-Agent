@@ -1,64 +1,100 @@
-# Terminal-AI-Agent v1.0
+# Mistral Terminal AI Agent (v2.0)
 
-An AI that controls your real PowerShell terminal. Type a request in plain English, it turns it into a real command, and after you confirm it actually runs: creating files, writing to files, running programs, whatever you asked. Not a simulation. It remembers past requests and asks before guessing on unclear ones.
+An AI agent that lives inside a real, persistent PowerShell session on your machine. Type a request in plain English, it turns it into a real command, and after you confirm it actually runs. Not a simulation, every approved command really executes on your machine.
 
-## How it works
+---
 
-1. A real PowerShell process is spawned and kept alive in the background, not a one-off subprocess per command.
-2. You type a request in plain English.
-3. Mistral AI translates it into a single real PowerShell command.
-4. If the request is ambiguous, the AI asks a clarifying question instead of guessing.
-5. The command is shown to you and **only runs after you confirm** (y/n).
-6. Output is read back from the live shell and printed.
-7. Recent requests are remembered during the session, and a short history is saved across restarts.
+## 🚀 Key Features
 
-Because the same shell process stays alive the whole time, state persists naturally between commands — `cd`, environment variables, everything behaves like a real terminal session, because it is one.
+### 🧠 Natural Language Command Engine
+*   **Plain-English Input:** Describe what you want in normal words, the AI translates it into a real, valid PowerShell command.
+*   **Command Chaining:** Multi-step requests (e.g. "commit and push") are broken into an ordered chain of real commands, shown to you in full before anything runs.
+*   **Clarify-on-Ambiguity:** If a request is unclear or risky to guess, the agent asks a direct clarifying question instead of guessing.
 
-## Features
+### 🖥️ Live, Stateful Shell
+*   **Real Persistent Process:** A single PowerShell process is kept alive in the background for the entire session, not a fresh subprocess per command.
+*   **True State Persistence:** cd, environment variables, and shell state carry over between commands exactly like a real terminal session, because it is one.
+*   **Prompt-Based Output Parsing:** Output is read directly off the live shell's stdout stream and parsed into clean, structured results.
 
-- Plain-English → real PowerShell command
-- Confirmation required before every command runs
-- Clarifying questions on ambiguous requests
-- Session memory (recalls recent requests/commands/output)
-- Persistent memory across restarts (last few requests saved to disk)
-- Live, stateful shell — not isolated one-shot commands
+### 🛡️ Safety and Memory
+*   **Confirmation Before Execution:** No command, single or chained, ever runs without explicit user confirmation.
+*   **Session Memory:** The agent recalls recent requests, commands, and outputs from earlier in the current session.
+*   **Cross-Session Memory:** A short history of past requests is saved to disk on exit and loaded back in on the next run.
 
-## Setup
+---
 
-1. Install dependencies:
-   ```
-   pip install mistralai python-dotenv
-   ```
-2. Create a `.env` file in the project root:
-   ```
-   MISTRAL_API_KEY2=your_api_key_here
-   ```
-3. Run:
-   ```
-   python main.py
-   ```
+## 📂 Project Structure
 
-## Usage
-
-```
-AI-CLI (PS C:\Users\you\project>) > create a file called notes.txt
-proceed running: 'New-Item -ItemType File -Name notes.txt' (n/y)> y
-...
+```text
+Mistral-Terminal-AI-Agent/
+├── memory/
+│   ├── __pycache__/
+│   ├── last_requests.txt        # Saved cross-session request history
+│   └── save_and_load_memory.py  # Memory read/write logic
+├── tests/
+│   ├── chaining_test_input.md
+│   ├── chaining_test_output.md
+│   ├── file_writing_and_creation_test_input.md
+│   └── file_writing_and_creation_test_output.md
+├── .env                          # Mistral API key (not committed)
+├── .gitignore
+├── main.py                       # Core agent loop, shell control, and AI integration
+└── README.md
 ```
 
-Type `quit` or press `Ctrl+C` to exit, your recent requests are saved for next time.
+---
 
-## Roadmap
+## 🛠️ Requirements and System Setup
 
-- [ ] Multi-step command chaining
-- [ ] Error recovery (AI retries on failed commands)
-- [ ] App-launching support
-- [ ] Cross-platform (Linux/Kali) shell support
+*   **Runtime Environment:** Python 3.10 or higher.
+*   **Platform:** Windows (spawns powershell.exe and parses Windows-style prompts).
+*   **Dependencies:** mistralai, python-dotenv.
 
-## Status
+```bash
+pip install mistralai python-dotenv
+```
 
-v1 complete and working: live shell, prompt detection, AI command translation, confirmation, clarification, and memory are all functional.
+---
 
-## Warning
+## 💻 How to Run
 
-This tool executes real commands on your real machine after your confirmation. Always read the command before approving it since the AI can make mistakes.
+### 1. Set Your API Key
+Create a `.env` file in the project root:
+```
+MISTRAL_API_KEY2=your_api_key_here
+```
+
+### 2. Launch the Agent
+```bash
+python main.py
+```
+
+### 3. Give it a request
+```
+AI-CLI (PS C:\Users\you\project>) > create a folder called test and a file called notes.txt inside it
+Full chain planned:
+  1. New-Item -ItemType Directory -Name test
+  2. New-Item -Path test\notes.txt -ItemType File
+proceed running this chain? (n/y)> y
+```
+
+Type `quit` to exit, session history is saved automatically.
+
+---
+
+## ⚠️ Warning
+
+This tool executes real commands on your real machine after confirmation. Always read the full command (or command chain) before approving it, the AI can make mistakes.
+
+---
+
+## 🗺️ Roadmap
+
+*   [x] Live persistent shell with prompt detection
+*   [x] Plain-English to PowerShell command translation
+*   [x] Clarify-on-ambiguity
+*   [x] Command chaining with full-chain preview and single confirmation
+*   [x] Session and cross-session memory
+*   [ ] Error recovery (agent reads command failures and proposes a fix)
+*   [ ] App-launching support
+*   [ ] Cross-platform (Linux/Kali) shell support
