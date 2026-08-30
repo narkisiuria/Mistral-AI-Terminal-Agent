@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+terminal_ai_agent/__init__.py
+terminal_ai_agent/main.py
+terminal_ai_agent.egg-info/PKG-INFO
+terminal_ai_agent.egg-info/SOURCES.txt
+terminal_ai_agent.egg-info/dependency_links.txt
+terminal_ai_agent.egg-info/entry_points.txt
+terminal_ai_agent.egg-info/requires.txt
+terminal_ai_agent.egg-info/top_level.txt
+terminal_ai_agent/memory/__init__.py
+terminal_ai_agent/memory/save_and_load_memory.py

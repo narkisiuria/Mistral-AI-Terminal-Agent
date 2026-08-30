@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: terminal-ai-agent
+Version: 2.0.0
+Summary: AI agent controlling a live PowerShell session
+Requires-Python: >=3.10
+Requires-Dist: mistralai
+Requires-Dist: python-dotenv

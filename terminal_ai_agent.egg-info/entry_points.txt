@@ -1,0 +1,2 @@
+[console_scripts]
+jarvis = terminal_ai_agent.main:main
