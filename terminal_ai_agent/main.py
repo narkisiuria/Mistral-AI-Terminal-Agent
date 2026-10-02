@@ -2,7 +2,7 @@ def main():
     import subprocess
     import time
     import os
-    from mistralai.client import Mistral
+    from groq import Groq
     from dotenv import load_dotenv
     import shlex
     import sys
@@ -46,14 +46,14 @@ def main():
 
     print("loading API key...")
     load_dotenv()
-    api_key = os.getenv("MISTRAL_API_KEY2")
+    api_key = os.getenv("GROQ_API_KEY")
 
     if not api_key:
-        print("Error: MISTRAL_API_KEY2 not found in your environment variables (.env file).")
+        print("Error: GROQ_API_KEY not found in your environment variables (.env file).")
         sys.exit(1)
         
     print("successfuly finished loading API key")
-    client = Mistral(api_key=api_key)
+    client = Groq(api_key=api_key)
 
     def command_actually_failed(result):
         lines = [l.strip() for l in result.strip().split("\n") if l.strip()]
@@ -61,11 +61,11 @@ def main():
         return marker_line == "__CMD_FAILED__"
 
     def call_mistral(system_prompt, user_content):
-        """Helper function to send data to Mistral AI."""
+        """Helper function to send data to call groq AI."""
         try:
             print("AI proccessing request...")
-            response = client.chat.complete(
-                model="mistral-small-latest", 
+            response = client.chat.completions.create(
+                model="openai/gpt-oss-120b", 
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_content}
@@ -75,7 +75,7 @@ def main():
             return response.choices[0].message.content
         
         except Exception as e:
-            print(f"Error communicating with Mistral AI: {e}")
+            print(f"Error communicating with Groq AI: {e}")
             sys.exit(1)
 
 
