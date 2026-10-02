@@ -14,7 +14,7 @@ def main():
     init(autoreset=True)
 
     # ==========================================
-    # VOICE IMPORTS (graceful fallback)
+    # VOICE IMPORTS
     # ==========================================
     try:
         import speech_recognition as sr
@@ -22,13 +22,35 @@ def main():
         import sounddevice as sd
         import numpy as np
         VOICE_AVAILABLE = True
-    except ImportError as e:
+    except ImportError:
         VOICE_AVAILABLE = False
         sr = None
         pyttsx3 = None
         sd = None
         np = None
-        print(Fore.YELLOW + f"⚠️  Voice libs missing ({e}). Voice disabled." + Style.RESET_ALL)
+
+    # ==========================================
+    # WEB TOOL IMPORTS
+    # ==========================================
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        WEB_TOOLS_AVAILABLE = True
+    except ImportError:
+        requests = None
+        BeautifulSoup = None
+        WEB_TOOLS_AVAILABLE = False
+
+    DDGS_CLASS = None
+    try:
+        from ddgs import DDGS as _DDGS
+        DDGS_CLASS = _DDGS
+    except ImportError:
+        try:
+            from duckduckgo_search import DDGS as _DDGS2
+            DDGS_CLASS = _DDGS2
+        except ImportError:
+            DDGS_CLASS = None
 
     # ==========================================
     # CONFIG
@@ -39,13 +61,19 @@ def main():
     MAX_FEEDBACK_CHARS = 2500
     MAX_DISPLAY_CHARS = 5000
     KEY_COOLDOWN_SECONDS = 60
-    MAX_AGENT_ITERATIONS = 6
+    MAX_AGENT_ITERATIONS = 8
+    MAX_WEB_RESULTS = 5
+    MAX_FETCH_CHARS = 3500
+    MAX_TOOLS_PER_ITERATION = 5
 
     VOICE_SAMPLE_RATE = 16000
-    VOICE_SILENCE_THRESHOLD = 500    # RMS threshold (16-bit scale)
-    VOICE_SILENCE_DURATION = 1.4     # seconds of silence to stop
-    VOICE_MAX_DURATION = 20          # hard stop
-    VOICE_START_TIMEOUT = 8          # seconds to wait for user to start speaking
+    VOICE_SILENCE_THRESHOLD = 500
+    VOICE_SILENCE_DURATION = 1.4
+    VOICE_MAX_DURATION = 20
+    VOICE_START_TIMEOUT = 8
+
+    # Commands / tools the AI sometimes emits as placeholders instead of leaving blank
+    PLACEHOLDER_TOKENS = {"EMPTY", "NONE", "NULL", "N/A", "NA", "--", "-", "...", "N/A."}
 
     DANGEROUS_PATTERNS = [
         r"\bformat\b", r"\brm -rf\b", r"\bdel /f\b", r"\bdel /s\b", r"\bshutdown\b",
@@ -75,6 +103,10 @@ def main():
             s = s[len("CHAINING:"):].strip()
         return s
 
+    def is_placeholder(text):
+        """Returns True if the AI output a placeholder like EMPTY/NONE instead of leaving blank."""
+        return text.strip().upper() in PLACEHOLDER_TOKENS
+
     def banner():
         print(Fore.CYAN + Style.BRIGHT + r"""
      ██  █████  ██████  ██    ██ ██ ███████
@@ -87,7 +119,117 @@ def main():
         print(Fore.WHITE + "     Type " + Fore.YELLOW + "/help" + Fore.WHITE + " for commands, or just ask." + Style.RESET_ALL)
         if VOICE_AVAILABLE:
             print(Fore.WHITE + "     Type " + Fore.YELLOW + "/voice" + Fore.WHITE + " to enable voice mode. 🎤" + Style.RESET_ALL)
+        if WEB_TOOLS_AVAILABLE and DDGS_CLASS:
+            print(Fore.WHITE + "     Web research: " + Fore.GREEN + "enabled" + Style.RESET_ALL)
+        else:
+            print(Fore.WHITE + "     Web research: " + Fore.RED + "unavailable (pip install ddgs requests beautifulsoup4)" + Style.RESET_ALL)
         print()
+
+    # ==========================================
+    # WEB TOOLS
+    # ==========================================
+    def tool_web_search(query, max_results=MAX_WEB_RESULTS):
+        if not DDGS_CLASS:
+            return "[ERROR] Web search not available (missing ddgs library)."
+        try:
+            results = []
+            with DDGS_CLASS() as ddgs:
+                for r in ddgs.text(query, max_results=max_results):
+                    results.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("href", "") or r.get("url", ""),
+                        "snippet": r.get("body", "") or r.get("snippet", "")
+                    })
+            if not results:
+                return f"[No results for: {query}]"
+
+            output = f"Search results for: {query}\n\n"
+            for i, r in enumerate(results, 1):
+                output += f"[{i}] {r['title']}\n"
+                output += f"    URL: {r['url']}\n"
+                output += f"    {r['snippet']}\n\n"
+            return output.strip()
+        except Exception as e:
+            return f"[ERROR] Search failed: {e}"
+
+    def tool_web_fetch(url, max_chars=MAX_FETCH_CHARS):
+        if not requests or not BeautifulSoup:
+            return "[ERROR] Web fetch not available (missing requests/bs4)."
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/122.0.0.0 Safari/537.36"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            resp = requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+
+            if resp.status_code in (401, 403, 429):
+                return (
+                    f"[ERROR] {resp.status_code} from {url}. "
+                    f"This site blocks automated scrapers (paywall/bot protection). "
+                    f"Try a different source — prefer open sites like Wikipedia, blogs, "
+                    f"dev.to, medium.com, news.ycombinator.com, arstechnica.com, theverge.com, "
+                    f"or use the search snippet instead."
+                )
+            resp.raise_for_status()
+
+            content_type = resp.headers.get("content-type", "")
+            if "html" not in content_type and "text" not in content_type:
+                return f"[Fetched {url}, but content-type is {content_type}; not reading.]"
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for tag in soup(["script", "style", "nav", "header", "footer", "aside", "form", "noscript"]):
+                tag.decompose()
+
+            title = soup.title.string.strip() if soup.title and soup.title.string else url
+
+            text = soup.get_text(separator="\n", strip=True)
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            text = re.sub(r"[ \t]{2,}", " ", text)
+
+            if len(text) > max_chars:
+                text = text[:max_chars] + f"\n... [truncated at {max_chars} chars]"
+
+            return f"# Page: {title}\n# URL: {url}\n\n{text}"
+        except Exception as e:
+            return f"[ERROR] Fetch failed for {url}: {e}"
+
+    def parse_tool_call(line):
+        line = line.strip()
+        if not line or is_placeholder(line):
+            return None
+        if line.upper().startswith("WEB_SEARCH:"):
+            return ("WEB_SEARCH", line.split(":", 1)[1].strip())
+        if line.upper().startswith("WEB_FETCH:"):
+            return ("WEB_FETCH", line.split(":", 1)[1].strip())
+        return None
+
+    def execute_tool(tool_name, arg):
+        print(Fore.BLUE + f"  🔧 {tool_name}: {arg}" + Style.RESET_ALL)
+        t0 = time.time()
+        if tool_name == "WEB_SEARCH":
+            result = tool_web_search(arg)
+        elif tool_name == "WEB_FETCH":
+            result = tool_web_fetch(arg)
+        else:
+            result = f"[ERROR] Unknown tool: {tool_name}"
+        dt = time.time() - t0
+
+        preview, _ = truncate(result, 600)
+        if result.startswith("[ERROR]") or result.startswith("[No results"):
+            print(Fore.RED + f"     {preview}" + Style.RESET_ALL)
+        else:
+            print(Fore.WHITE + f"     {preview}" + Style.RESET_ALL)
+        print(Fore.WHITE + f"     ⏱  {dt:.2f}s" + Style.RESET_ALL)
+
+        return result
 
     # ==========================================
     # VOICE ENGINE
@@ -97,16 +239,6 @@ def main():
             return
         try:
             recognizer = sr.Recognizer()
-
-            # List available microphones
-            try:
-                devices = sd.query_devices()
-                input_devs = [d for d in devices if d['max_input_channels'] > 0]
-                print(Fore.CYAN + f"🎤 Found {len(input_devs)} input device(s). Using default." + Style.RESET_ALL)
-            except Exception:
-                pass
-
-            # TTS init
             tts = pyttsx3.init()
             voices = tts.getProperty('voices')
             chosen = None
@@ -124,15 +256,10 @@ def main():
                 print(Fore.GREEN + f"🔊 TTS voice: {chosen.name}" + Style.RESET_ALL)
             tts.setProperty('rate', 175)
             tts.setProperty('volume', 1.0)
-
             state["recognizer"] = recognizer
             state["tts"] = tts
-            print(Fore.GREEN + "✔ Voice engine ready." + Style.RESET_ALL)
-
         except Exception as e:
             print(Fore.RED + f"⚠️  Voice init failed: {e}" + Style.RESET_ALL)
-            state["recognizer"] = None
-            state["tts"] = None
 
     def strip_for_speech(text):
         if not text:
@@ -164,7 +291,6 @@ def main():
             print(Fore.RED + f"🔊 TTS error: {e}" + Style.RESET_ALL)
 
     def record_until_silence():
-        """Records from default mic until silence. Returns numpy int16 array or None."""
         chunk_dur = 0.1
         chunk_samples = int(VOICE_SAMPLE_RATE * chunk_dur)
         max_chunks = int(VOICE_MAX_DURATION / chunk_dur)
@@ -177,10 +303,8 @@ def main():
 
         try:
             stream = sd.InputStream(
-                samplerate=VOICE_SAMPLE_RATE,
-                channels=1,
-                dtype='int16',
-                blocksize=chunk_samples
+                samplerate=VOICE_SAMPLE_RATE, channels=1,
+                dtype='int16', blocksize=chunk_samples
             )
             stream.start()
         except Exception as e:
@@ -189,9 +313,8 @@ def main():
 
         try:
             for i in range(max_chunks):
-                chunk, overflowed = stream.read(chunk_samples)
+                chunk, _ = stream.read(chunk_samples)
                 recorded.append(chunk.copy())
-
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
                 if rms > VOICE_SILENCE_THRESHOLD:
@@ -209,37 +332,30 @@ def main():
                             print(Fore.YELLOW + "🎤 No speech detected (timeout)." + Style.RESET_ALL)
                             return None
         except KeyboardInterrupt:
-            print(Fore.YELLOW + "🎤 Recording cancelled." + Style.RESET_ALL)
             return None
         finally:
             try:
-                stream.stop()
-                stream.close()
+                stream.stop(); stream.close()
             except Exception:
                 pass
 
         if not started:
             return None
-
-        audio = np.concatenate(recorded, axis=0)
-        return audio
+        return np.concatenate(recorded, axis=0)
 
     def listen():
         if not state["recognizer"]:
             print(Fore.RED + "🎤 Voice not initialized. Run /voice to enable." + Style.RESET_ALL)
             return None
-
         print(Fore.CYAN + "🎤 Listening... (speak now)" + Style.RESET_ALL)
         audio_np = record_until_silence()
         if audio_np is None:
             return None
-
         try:
             pcm_bytes = audio_np.tobytes()
             audio_data = sr.AudioData(pcm_bytes, VOICE_SAMPLE_RATE, 2)
             print(Fore.CYAN + "🎤 Transcribing..." + Style.RESET_ALL)
-            text = state["recognizer"].recognize_google(audio_data)
-            return text
+            return state["recognizer"].recognize_google(audio_data)
         except sr.UnknownValueError:
             print(Fore.RED + "🎤 Couldn't understand. Try again." + Style.RESET_ALL)
             return None
@@ -272,9 +388,6 @@ def main():
                 f.write("")
         print(Fore.GREEN + "🧹 Memory cleared." + Style.RESET_ALL)
 
-    # ==========================================
-    # SESSION HISTORY
-    # ==========================================
     def load_session_history():
         os.makedirs(MEMORY_DIR, exist_ok=True)
         if not os.path.exists(SESSION_HISTORY_FILE):
@@ -422,13 +535,14 @@ def main():
         init_voice()
 
     # ==========================================
-    # SYSTEM PROMPTS
+    # SYSTEM PROMPT
     # ==========================================
     system_prompt = (
-        '''You are JARVIS, an advanced AI controlling a Windows machine via a real PowerShell session.
+        '''You are JARVIS, an advanced AI controlling a Windows machine via a real PowerShell session,
+            with the ability to research the web.
             You are NOT a translator. You are an ACTOR. You DO things, you don't just explain them.
-            You can open applications, create files, run programs, and interact with the OS.
-            Do not ask for permission. Just output the commands to be executed.
+            You can open applications, create files, run programs, research the web, and interact with the OS.
+            Do not ask for permission. Just output the commands/tools to be executed.
 
             Current memory about the user and their system:
             ---
@@ -436,22 +550,26 @@ def main():
             ---
 
             You operate in an AGENT LOOP:
-            - You output commands.
-            - You will then be shown their REAL output (possibly truncated).
-            - Based on that output, you can run MORE commands, or give your FINAL ANSWER.
-            - Only output a final [REPLY] when you have NO commands left to run.
+            - You output commands (PowerShell) and/or tools (web research).
+            - You will then be shown their REAL results.
+            - Based on those results, you can run MORE commands/tools, or give your FINAL ANSWER.
+            - Only output a final [REPLY] when you have NO commands and NO tools left to run.
 
             You must respond in the following exact format:
             [THOUGHT]
             Your step-by-step reasoning here.
             [/THOUGHT]
             [REPLY]
-            Your conversational reply. If you're just executing commands, output NONE.
+            Your conversational reply. If you're just executing, output NONE.
             [/REPLY]
             [COMMANDS]
-            Command1
-            Command2
+            PowerShell command 1
+            PowerShell command 2
             [/COMMANDS]
+            [TOOLS]
+            WEB_SEARCH: search query here
+            WEB_FETCH: https://example.com/article
+            [/TOOLS]
             [MEMORY_UPDATE]
             - Any new fact learned about the user, their preferences, or their project
             [/MEMORY_UPDATE]
@@ -461,32 +579,55 @@ def main():
             NONE
             [/MEMORY_UPDATE]
 
-            If you have NO more commands to run (ready for final answer), leave [COMMANDS] empty.
+            CRITICAL: If a block has no content, leave it COMPLETELY EMPTY.
+            Do NOT put the word "EMPTY", "NONE", "N/A", or anything else inside an unused block.
+            An empty [COMMANDS] block looks like this: [COMMANDS][/COMMANDS] on a single line.
 
-            VOICE MODE NOTE: When voice mode is on, your [REPLY] will be SPOKEN aloud. 
+            Only give a final [REPLY] when both [COMMANDS] and [TOOLS] are empty.
+
+            STOPPING RULES (VERY IMPORTANT):
+            - You get a LIMITED number of iterations. Do not waste them.
+            - If you already have enough info from a search snippet OR a fetched page, STOP and give [REPLY].
+            - NEVER run the same WEB_SEARCH query twice. If a search didn't work, change strategy or just answer.
+            - If a WEB_FETCH returns 401/403/429, do NOT try another URL from the same domain.
+              Try a different site from the search results (Wikipedia, blogs, dev.to, medium.com,
+              arstechnica.com, theverge.com, news.ycombinator.com) — or just answer from the snippets.
+            - You will be reminded to wrap up in your final iterations. When you see that reminder,
+              output [REPLY] with your best answer and leave both blocks empty.
+
+            WHEN TO USE WHICH:
+            - [COMMANDS] for local actions: opening apps, creating/editing files, running programs, git, etc.
+            - [TOOLS] for anything on the internet:
+                * WEB_SEARCH: find current info, articles, docs, news, tutorials.
+                * WEB_FETCH: read the full text of a specific URL.
+              Use tools whenever the user asks about "current", "latest", "recent", "today's", or anything
+              you don't already know from training.
+              If search snippets already contain the answer, you do NOT need to fetch — just answer.
+
+            WEB RESEARCH PATTERN:
+            1. [TOOLS] WEB_SEARCH: <query>
+            2. Review results. If snippets answer the question, go to step 4.
+            3. [TOOLS] WEB_FETCH: <the most promising OPEN url>  (avoid reuters/wsj/bloomberg/paywalled)
+            4. Summarize for the user in [REPLY].
+            - If the user says "latest" or "current", and your only info is from session history older than today, do a FRESH search instead of relying on old results.
+
+            VOICE MODE NOTE: When voice mode is on, your [REPLY] will be SPOKEN aloud.
             Keep it conversational, natural, and concise. Avoid code, URLs, and special symbols in [REPLY].
 
-            CRITICAL RULES:
-            - Output RAW PowerShell commands inside [COMMANDS]. No markdown, no backticks.
+            CRITICAL RULES FOR [COMMANDS]:
+            - RAW PowerShell commands. No markdown, no backticks.
             - One command per line. Do NOT add "CHAINING:" label anywhere.
             - NEVER use here-strings (@""@). All commands MUST be single-line.
-            - To write multi-line content, use an array: Set-Content -Path "file.txt" -Value "Line 1", "Line 2", "Line 3"
             - Do not use ';' inside quotes or arguments.
             - To open an app: `Start-Process notepad -ArgumentList "file.txt"`.
             - Never invent flags or cmdlets that don't exist in PowerShell.
             - Assume current working directory is correct — don't cd unless asked.
-            - Prefer built-in PowerShell cmdlets over external tools unless the user names one.
-            - If a request includes a GitHub URL and asks to "push", assume git is ALREADY set up with origin. Just do: git add ., git commit, git push.
 
             OUTPUT SIZE RULES:
             - NEVER run `Get-ChildItem -Recurse` without filters.
             - ALWAYS exclude heavy dirs: `-Exclude .git,node_modules,__pycache__,venv,.venv,build,dist,*.pyc`
             - ALWAYS cap output: pipe through `Select-Object -First 50` for lists.
-            - Prefer: `Get-ChildItem -File -Recurse -Exclude .git,node_modules,__pycache__ | Select-Object -ExpandProperty FullName | Select-Object -First 100`
-            - Use `ConvertTo-Json` or `Out-String -Width 300` to avoid wrapped tables.
             - Read files with `-TotalCount 100` cap.
-            - If you need to read multiple files, use a ForEach-Object loop.
-            - Open a file for the user with: `Start-Process notepad -ArgumentList "file.txt"`
 
             Host slash commands (do NOT run as PowerShell): /help, /memory, /forget, /history, /keys, /voice, /voices, /clear, /toggle-think, /quit.'''
     )
@@ -503,7 +644,8 @@ def main():
             - Never use ";" inside the fixed command's own content.
             - Never use "&&" (not valid in PowerShell) — use ";" or "if ($?) { ... }".
             - Never use here-strings. All commands MUST be single-line.
-            - If the fix is "the file doesn't exist", output an explanation, not a fix.'''
+            - If the fix is "the file doesn't exist", output an explanation, not a fix.
+            - If the command was a placeholder like EMPTY/NONE/N/A, tell the caller to skip it (no fix).'''
     )
 
     # ==========================================
@@ -511,12 +653,12 @@ def main():
     # ==========================================
     def execute_command(cmd, current_prompt):
         cmd = strip_chain_prefix(cmd)
-        if not cmd:
+        if not cmd or is_placeholder(cmd):
             return True, "", current_prompt
 
         if is_dangerous(cmd):
             print(Fore.RED + f"\n⚠️  DANGER: destructive command: {cmd}" + Style.RESET_ALL)
-            speak("Warning. A dangerous command was blocked. Please confirm in the terminal.", force=True)
+            speak("Warning. A dangerous command was blocked.", force=True)
             confirm = input(Fore.RED + "Override and run? (y/n) > " + Style.RESET_ALL).lower()
             if confirm != 'y':
                 print(Fore.RED + "❌ Aborted." + Style.RESET_ALL)
@@ -545,6 +687,9 @@ def main():
 
             if "FIXABLE: " in failure_response:
                 fix_cmd = strip_chain_prefix(failure_response.split("FIXABLE: ", 1)[1].strip())
+                if is_placeholder(fix_cmd):
+                    gave_up = True
+                    break
                 if is_dangerous(fix_cmd):
                     print(Fore.RED + f"\n⚠️  DANGER in fix: {fix_cmd}" + Style.RESET_ALL)
                     cf = input(Fore.RED + "Override? (y/n) > " + Style.RESET_ALL).lower()
@@ -585,7 +730,7 @@ def main():
     def run_agent_turn(client_request, memory_context, current_prompt, session_history):
         recent = session_history[-3:]
         history_text = "\n".join(
-            f"Request: {h['request']}\nCommand: {h['command']}\nOutput: {h['output'][:400]}"
+            f"Request: {h['request']}\nStep: {h.get('command') or h.get('tool')}\nOutput: {h['output'][:400]}"
             for h in recent
         )
 
@@ -596,7 +741,7 @@ def main():
         )
 
         turn_start = time.time()
-        commands_run = 0
+        steps_run = 0
         iterations_used = 0
 
         for iteration in range(1, MAX_AGENT_ITERATIONS + 1):
@@ -617,7 +762,16 @@ def main():
             cmd_match = re.search(r"\[COMMANDS\](.*?)\[/COMMANDS\]", ai_response, re.DOTALL)
             if cmd_match:
                 commands = [strip_chain_prefix(l) for l in cmd_match.group(1).strip().split("\n") if l.strip()]
-                commands = [c for c in commands if c]
+                commands = [c for c in commands if c and not is_placeholder(c)]
+
+            tools = []
+            tools_match = re.search(r"\[TOOLS\](.*?)\[/TOOLS\]", ai_response, re.DOTALL)
+            if tools_match:
+                for line in tools_match.group(1).strip().split("\n"):
+                    parsed = parse_tool_call(line)
+                    if parsed:
+                        tools.append(parsed)
+                tools = tools[:MAX_TOOLS_PER_ITERATION]
 
             memory_update = "NONE"
             mem_match = re.search(r"\[MEMORY_UPDATE\](.*?)\[/MEMORY_UPDATE\]", ai_response, re.DOTALL)
@@ -634,44 +788,102 @@ def main():
             if memory_update and memory_update.upper() != "NONE":
                 save_ai_memory(memory_update)
 
-            if not commands:
+            if not commands and not tools:
                 total_dt = time.time() - turn_start
-                print(Fore.WHITE + f"\n── Turn done · {iterations_used} iter · {commands_run} cmd · {total_dt:.1f}s ──" + Style.RESET_ALL)
+                print(Fore.WHITE + f"\n── Turn done · {iterations_used} iter · {steps_run} step · {total_dt:.1f}s ──" + Style.RESET_ALL)
                 return current_prompt, session_history
 
-            print(Fore.YELLOW + f"\n⚡ Executing chain (iteration {iteration}/{MAX_AGENT_ITERATIONS}):" + Style.RESET_ALL)
+            # Execute commands
+            step_outputs = []
+            if commands:
+                print(Fore.YELLOW + f"\n⚡ Commands (iteration {iteration}/{MAX_AGENT_ITERATIONS}):" + Style.RESET_ALL)
+                for cmd in commands:
+                    resolved, feedback, current_prompt = execute_command(cmd, current_prompt)
+                    steps_run += 1
+                    step_outputs.append({
+                        "type": "COMMAND",
+                        "name": cmd,
+                        "output": feedback,
+                        "success": resolved
+                    })
+                    session_history.append({
+                        "timestamp": datetime.now().isoformat(),
+                        "request": client_request,
+                        "command": cmd,
+                        "output": feedback
+                    })
 
-            command_outputs = []
-            for cmd in commands:
-                resolved, feedback, current_prompt = execute_command(cmd, current_prompt)
-                commands_run += 1
-                command_outputs.append({
-                    "command": cmd,
-                    "output": feedback,
-                    "success": resolved
-                })
-                session_history.append({
-                    "timestamp": datetime.now().isoformat(),
-                    "request": client_request,
-                    "command": cmd,
-                    "output": feedback
-                })
+            # Execute tools
+            if tools:
+                print(Fore.BLUE + f"\n🌐 Web tools (iteration {iteration}/{MAX_AGENT_ITERATIONS}):" + Style.RESET_ALL)
+                for tool_name, arg in tools:
+                    result = execute_tool(tool_name, arg)
+                    steps_run += 1
+                    capped, _ = truncate(result, MAX_FEEDBACK_CHARS)
+                    step_outputs.append({
+                        "type": "TOOL",
+                        "name": f"{tool_name}: {arg}",
+                        "output": capped,
+                        "success": not result.startswith("[ERROR]")
+                    })
+                    session_history.append({
+                        "timestamp": datetime.now().isoformat(),
+                        "request": client_request,
+                        "tool": f"{tool_name}: {arg}",
+                        "output": capped
+                    })
 
+            # Feed everything back
             output_text = "\n\n".join(
-                f"Command: {c['command']}\nSuccess: {c['success']}\nOutput:\n{c['output']}"
-                for c in command_outputs
+                f"[{s['type']}] {s['name']}\nSuccess: {s['success']}\nOutput:\n{s['output']}"
+                for s in step_outputs
             )
+
+            # Wrap-up nudge when we're near the end
+            remaining = MAX_AGENT_ITERATIONS - iteration
+            if remaining <= 1:
+                wrap_note = (
+                    f"\n\n⚠️  WRAP-UP: You are on iteration {iteration} of {MAX_AGENT_ITERATIONS}. "
+                    f"You have {remaining} iteration(s) left. STOP gathering more info NOW. "
+                    f"Give your best FINAL ANSWER in [REPLY] and leave [COMMANDS] and [TOOLS] EMPTY."
+                )
+            elif remaining <= 3:
+                wrap_note = (
+                    f"\n\n(Note: You have {remaining} iterations left. If you have enough to answer, "
+                    f"give the FINAL ANSWER in [REPLY] and leave both blocks EMPTY.)"
+                )
+            else:
+                wrap_note = ""
 
             user_content = (
                 f"{memory_context}\n\n"
                 f"Original request: {client_request}\n\n"
-                f"You just ran these commands:\n---\n{output_text}\n---\n\n"
+                f"You just ran these steps:\n---\n{output_text}\n---\n\n"
                 f"Now either:\n"
-                f"1. Output MORE commands in [COMMANDS] to gather more info, OR\n"
-                f"2. If you have enough info, output the FINAL ANSWER in [REPLY] and leave [COMMANDS] empty."
+                f"1. Output MORE commands in [COMMANDS] or tools in [TOOLS], OR\n"
+                f"2. If you have enough info, output the FINAL ANSWER in [REPLY] and leave both "
+                f"[COMMANDS] and [TOOLS] empty.{wrap_note}"
             )
 
-        print(Fore.RED + f"⚠️  Hit max iterations ({MAX_AGENT_ITERATIONS}). Stopping." + Style.RESET_ALL)
+        # If loop ends without a final answer, force one
+        print(Fore.YELLOW + f"⚠️  Iteration budget exhausted. Asking AI for a final summary..." + Style.RESET_ALL)
+        try:
+            force_prompt = (
+                f"{memory_context}\n\n"
+                f"Original request: {client_request}\n\n"
+                f"You ran out of iterations. Based on everything you gathered, "
+                f"give your FINAL ANSWER now in [REPLY]. Leave [COMMANDS] and [TOOLS] empty."
+            )
+            final_response = call_ai(system_prompt.format(memory_context=memory_context), force_prompt)
+            reply_match = re.search(r"\[REPLY\](.*?)\[/REPLY\]", final_response, re.DOTALL)
+            if reply_match:
+                reply = reply_match.group(1).strip()
+                if reply and reply.upper() != "NONE":
+                    print(Fore.CYAN + f"\n💬 JARVIS: {reply}" + Style.RESET_ALL)
+                    speak(reply)
+        except Exception as e:
+            print(Fore.RED + f"Couldn't get final answer: {e}" + Style.RESET_ALL)
+
         return current_prompt, session_history
 
     # ==========================================
@@ -684,26 +896,26 @@ def main():
         print(Fore.YELLOW + "  /forget" + Fore.WHITE + "         Wipe the AI's memory")
         print(Fore.YELLOW + "  /history" + Fore.WHITE + "        Show last 10 commands from session")
         print(Fore.YELLOW + "  /keys" + Fore.WHITE + "           Show API key cooldown status")
-        print(Fore.YELLOW + "  /voice" + Fore.WHITE + "          Toggle voice mode (mic + spoken replies)")
-        print(Fore.YELLOW + "  /voices" + Fore.WHITE + "         List available TTS voices")
+        print(Fore.YELLOW + "  /voice" + Fore.WHITE + "          Toggle voice mode")
+        print(Fore.YELLOW + "  /voices" + Fore.WHITE + "         List TTS voices")
         print(Fore.YELLOW + "  /clear" + Fore.WHITE + "          Clear the screen")
         print(Fore.YELLOW + "  /toggle-think" + Fore.WHITE + "   Show/hide AI's [THOUGHT] block")
-        print(Fore.YELLOW + "  /quit" + Fore.WHITE + "           Exit (saves memory)\n")
+        print(Fore.YELLOW + "  /quit" + Fore.WHITE + "           Exit\n")
+        print(Fore.CYAN + "💡 Try asking:" + Style.RESET_ALL)
+        print(Fore.WHITE + "  • \"search the web for the latest Python 3.14 features\"" + Style.RESET_ALL)
+        print(Fore.WHITE + "  • \"what's the current price of bitcoin?\"" + Style.RESET_ALL)
+        print(Fore.WHITE + "  • \"research the best way to structure a python package and save notes to notes.txt\"" + Style.RESET_ALL + "\n")
 
     def handle_slash(cmd, session_history):
         cmd = cmd.lower().strip()
 
         if cmd == "/help":
-            print_help()
-            return True
-
+            print_help(); return True
         if cmd == "/memory":
             mem = load_ai_memory()
             print(Fore.CYAN + "\n🧠 Current AI memory:" + Style.RESET_ALL)
-            print(Fore.WHITE + (mem if mem else "(empty)") + Style.RESET_ALL)
-            print()
+            print(Fore.WHITE + (mem if mem else "(empty)") + Style.RESET_ALL + "\n")
             return True
-
         if cmd == "/forget":
             confirm = input(Fore.RED + "Wipe all AI memory? (y/n) > " + Style.RESET_ALL).lower()
             if confirm == 'y':
@@ -711,15 +923,14 @@ def main():
             else:
                 print(Fore.YELLOW + "Cancelled." + Style.RESET_ALL)
             return True
-
         if cmd == "/history":
             recent = session_history[-10:]
-            print(Fore.CYAN + f"\n📜 Last {len(recent)} commands:" + Style.RESET_ALL)
+            print(Fore.CYAN + f"\n📜 Last {len(recent)} steps:" + Style.RESET_ALL)
             for h in recent:
-                print(Fore.YELLOW + "  • " + Fore.WHITE + f"{h['command'][:100]}" + Style.RESET_ALL)
+                label = h.get('command') or h.get('tool') or "?"
+                print(Fore.YELLOW + "  • " + Fore.WHITE + f"{label[:100]}" + Style.RESET_ALL)
             print()
             return True
-
         if cmd == "/keys":
             now = time.time()
             print(Fore.CYAN + "\n🔑 API key status:" + Style.RESET_ALL)
@@ -731,14 +942,11 @@ def main():
                     print(Fore.GREEN + f"  ✓ {c['name']} — ready" + Style.RESET_ALL)
             print()
             return True
-
         if cmd == "/voice":
             if not VOICE_AVAILABLE:
                 print(Fore.RED + "❌ Voice libs not installed." + Style.RESET_ALL)
-                print(Fore.WHITE + "Run: pip install SpeechRecognition pyttsx3 sounddevice numpy" + Style.RESET_ALL)
                 return True
             if not state["tts"]:
-                print(Fore.YELLOW + "⚠️  Voice engine not initialized. Re-launching..." + Style.RESET_ALL)
                 init_voice()
                 if not state["tts"]:
                     return True
@@ -747,37 +955,27 @@ def main():
             color = Fore.GREEN if state["voice_mode"] else Fore.YELLOW
             print(color + f"🎤 Voice mode: {status}" + Style.RESET_ALL)
             if state["voice_mode"]:
-                print(Fore.WHITE + "   Press Enter at the prompt to speak, or type normally." + Style.RESET_ALL)
                 speak("Voice mode activated.", force=True)
             else:
                 speak("Voice mode deactivated.", force=True)
             return True
-
         if cmd == "/voices":
             if not state["tts"]:
-                print(Fore.RED + "❌ TTS not initialized." + Style.RESET_ALL)
-                return True
+                print(Fore.RED + "❌ TTS not initialized." + Style.RESET_ALL); return True
             voices = state["tts"].getProperty('voices')
             print(Fore.CYAN + "\n🔊 Available voices:" + Style.RESET_ALL)
             for i, v in enumerate(voices):
                 print(Fore.YELLOW + f"  [{i}] " + Fore.WHITE + f"{v.name}" + Style.RESET_ALL)
-            print(Fore.WHITE + "\nTo change: edit init_voice() and pick a matching voice name." + Style.RESET_ALL)
+            print()
             return True
-
         if cmd == "/clear":
-            os.system("cls")
-            banner()
-            return True
-
+            os.system("cls"); banner(); return True
         if cmd == "/toggle-think":
             state["show_thoughts"] = not state["show_thoughts"]
-            status = "ON" if state["show_thoughts"] else "OFF"
-            print(Fore.GREEN + f"🧠 Thought display: {status}" + Style.RESET_ALL)
+            print(Fore.GREEN + f"🧠 Thought display: {'ON' if state['show_thoughts'] else 'OFF'}" + Style.RESET_ALL)
             return True
-
         if cmd == "/quit":
             return False
-
         print(Fore.RED + f"Unknown command: {cmd}. Try /help" + Style.RESET_ALL)
         return True
 
@@ -796,7 +994,6 @@ def main():
                     raw = input(Fore.YELLOW + "> " + Style.RESET_ALL)
                 except EOFError:
                     break
-
                 if raw.strip() == "":
                     spoken = listen()
                     if spoken:
