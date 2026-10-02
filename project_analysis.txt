@@ -1,0 +1,13 @@
+File count: 0
+
+README.md content:
+# Mistral Terminal AI Agent (v2.0)
+
+An AI agent that lives inside a real, persistent PowerShell session on your machine. Type a request in plain English, it turns it into a real command, and after you confirm it actually runs. Not a simulation, every approved command really executes on your machine.
+
+---
+
+## 🚀 Key Features
+
+### 🧠 Natural Language Command Engine
+*   **Plain-English Input:** Describe what you want in normal words, the AI translates it into a real, valid PowerShell command.

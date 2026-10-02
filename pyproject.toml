@@ -14,3 +14,5 @@ jarvis = "terminal_ai_agent.main:main"
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+[tool.setuptools]
+packages = ["terminal_ai_agent"]
